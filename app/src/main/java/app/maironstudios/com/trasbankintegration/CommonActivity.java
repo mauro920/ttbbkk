@@ -64,6 +64,7 @@ abstract class CommonActivity extends Activity {
     }
     protected void releaseService()
     {
+        Log.i("MAS", "releaseService");
         if (mBound)
         {
             unbindService(mServiceConnection);

@@ -64,9 +64,8 @@ public class MainActivity extends CommonActivity {
             sendSale();
         });
 
-        appendLog("Service", "Start initService");
+        appendLog("Service", "initService");
         initService();
-        appendLog("Service", "End initService");
 
         mPclUtil = new PclUtilities(this, "app.maironstudios.com.trasbankintegration", "pairing_addr.txt");
 
@@ -114,21 +113,20 @@ public class MainActivity extends CommonActivity {
 
     @Override
     protected void onStop() {
-        appendLog("Service", "Start stopPclService");
         stopPclService();
-        appendLog("Service", "End stopPclService");
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
+        appendLog("Service", "releaseService");
         releaseService();
         super.onDestroy();
     }
 
     private void startPclService()
     {
-        Log.i("MAS", "startPclService");
+        appendLog("Service", "startPclService");
         if (!mServiceStarted)
         {
             appendLog("Service", "Start startPclService");
@@ -140,23 +138,18 @@ public class MainActivity extends CommonActivity {
             i.putExtra("ENABLE_LOG", enableLog);
             if (getApplicationContext().startService(i) != null) mServiceStarted = true;
 
-            appendLog("Service", "End startPclService - started: "+mServiceStarted);
-        } else {
-            appendLog("Service", "Service already started");
+            appendLog("Service", "startPclService - started: "+mServiceStarted);
         }
     }
 
     private void stopPclService()
     {
+        appendLog("Service", "stopPclService");
         if (mServiceStarted)
         {
-            appendLog("Service", "Start releaseService");
             Intent i = new Intent(this, PclService.class);
             if (getApplicationContext().stopService(i))
                 mServiceStarted = false;
-            appendLog("Service", "End releaseService");
-        } else {
-            appendLog("Service", "Service already stopped");
         }
     }
 
