@@ -1,0 +1,432 @@
+package app.maironstudios.com.trasbankintegration;
+
+import static posintegrado.ingenico.com.mposintegrado.mposLib.hexStringToByteArray;
+
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.ProgressBar;
+import android.widget.Toast;
+
+import androidx.core.content.ContextCompat;
+
+import com.ingenico.pclservice.PclService;
+import com.ingenico.pclutilities.PclUtilities;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+import cl.transbank.pos.POS;
+import cl.transbank.pos.exceptions.TransbankPortNotConfiguredException;
+import cl.transbank.pos.responses.SaleResponse;
+import posintegrado.ingenico.com.mposintegrado.mposLib;
+
+public class MainActivity extends CommonActivity {
+    /*Variable de control si ya se encontró un dispositivo*/
+    boolean bFound = false;
+
+    private ProgressBar progressBar;
+    private Button retryButton;
+
+    private VtexData vtexData;
+
+    private PclUtilities mPclUtil;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        progressBar = findViewById(R.id.progressBar);
+        retryButton = findViewById(R.id.button_retry);
+
+        retryButton.setOnClickListener(view -> {
+            appendLog("Payment", "Retry");
+            toogleRetry(false);
+            sendSale();
+        });
+
+        appendLog("Service", "Start initService");
+        initService();
+        appendLog("Service", "End initService");
+
+        mPclUtil = new PclUtilities(this, "app.maironstudios.com.trasbankintegration", "pairing_addr.txt");
+
+        /*Se obtiene con esto la lista de los dipositivos ingenico paired con el
+        terminal*/
+        Set<PclUtilities.BluetoothCompanion> btComps = mPclUtil.GetPairedCompanions();
+        if (btComps != null && (btComps.size() > 0)) {
+            /* Loop through paired devices*/
+            for (PclUtilities.BluetoothCompanion comp : btComps) {
+                /*Aca se revisa si el dipositivo esta activo y lo define como el actual*/
+                if (comp.isActivated()) {
+                    bFound = true;
+                    mCurrentDevice = comp.getBluetoothDevice().getAddress() + " - " +
+                            comp.getBluetoothDevice().getName();
+                    appendLog("Device", "Found device -> "+mCurrentDevice);
+                }
+                else {
+                    /*Se activa el dispositivo*/
+                    mPclUtil.ActivateCompanion(comp.getBluetoothDevice().getAddress());
+                    appendLog("Device", "Activate Companion");
+                    return;
+                }
+            }
+        }
+
+        Intent intent = getIntent();
+        if (intent != null && intent.getData() != null) {
+            Uri data = intent.getData();
+
+            String host = data.getHost();
+            if (host.equals("payment") || host.equals("payment-reversal")) {
+                appendLog("Payment", "Recieve " + host);
+                getParamsFromIntent(data);
+            } else if (host.equals(getString(R.string.host))) {
+                Log.e("MAS","recieved callback");
+            }
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        startPclService();
+    }
+
+    @Override
+    protected void onStop() {
+        appendLog("Service", "Start stopPclService");
+        stopPclService();
+        appendLog("Service", "End stopPclService");
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        releaseService();
+        super.onDestroy();
+    }
+
+    private void startPclService()
+    {
+        Log.i("MAS", "startPclService");
+        if (!mServiceStarted)
+        {
+            appendLog("Service", "Start startPclService");
+            SharedPreferences settings = getSharedPreferences("PCLSERVICE", MODE_PRIVATE);
+            boolean enableLog = settings.getBoolean("ENABLE_LOG", true);
+            Intent i = new Intent(this, PclService.class);
+            i.putExtra("PACKAGE_NAME", "app.maironstudios.com.trasbankintegration");
+            i.putExtra("FILE_NAME", "pairing_addr.txt");
+            i.putExtra("ENABLE_LOG", enableLog);
+            if (getApplicationContext().startService(i) != null) mServiceStarted = true;
+
+            appendLog("Service", "End startPclService - started: "+mServiceStarted);
+        } else {
+            appendLog("Service", "Service already started");
+        }
+    }
+
+    private void stopPclService()
+    {
+        if (mServiceStarted)
+        {
+            appendLog("Service", "Start releaseService");
+            Intent i = new Intent(this, PclService.class);
+            if (getApplicationContext().stopService(i))
+                mServiceStarted = false;
+            appendLog("Service", "End releaseService");
+        } else {
+            appendLog("Service", "Service already stopped");
+        }
+    }
+
+    @Override
+    void onStateChanged(String state) {
+        //
+    }
+
+    @Override
+    void onPclServiceConnected() {
+        //
+    }
+
+    protected void getParamsFromIntent(Uri data) {
+        Log.i("MAS","ReceiveVTEX.getParamsFromIntent();");
+
+        showProgress(true);
+
+        String action = null, queryString = null;
+
+        vtexData = new VtexData();
+
+        try {
+            Log.i("ReceiveVTEX","try map data");
+            action = data.getHost();
+            queryString = data.getQuery();
+
+            Log.i("ReceiveVTEX", "uri: "+data);
+            Log.i("ReceiveVTEX", "query: "+queryString);
+
+            JSONObject json = new JSONObject();
+            json.put("recieveVTEX", queryString);
+
+            if(data.getQueryParameter("action") != null && !data.getQueryParameter("action").isEmpty()) {
+                action = data.getQueryParameter("action");
+                vtexData.setAction(data.getQueryParameter("action"));
+            }
+            if(data.getQueryParameter("scheme") != null && !data.getQueryParameter("scheme").isEmpty())
+                vtexData.setScheme(data.getQueryParameter("scheme"));
+
+            if(data.getQueryParameter("paymentId") != null && !data.getQueryParameter("paymentId").isEmpty())
+                vtexData.setPaymentId(data.getQueryParameter("paymentId"));
+            if(data.getQueryParameter("paymentSystemName") != null && !data.getQueryParameter("paymentSystemName").isEmpty())
+                vtexData.setPaymentDescription(data.getQueryParameter("paymentSystemName"));
+            if(data.getQueryParameter("amount") != null && !data.getQueryParameter("amount").isEmpty())
+                vtexData.setAmount(Double.parseDouble(data.getQueryParameter("amount")));
+            if(data.getQueryParameter("paymentType") != null && !data.getQueryParameter("paymentType").isEmpty())
+                vtexData.setPaymentType(data.getQueryParameter("paymentType"));
+            if(data.getQueryParameter("installments") != null && !data.getQueryParameter("installments").isEmpty())
+                vtexData.setInstallments(Integer.parseInt(data.getQueryParameter("installments")));
+
+            if(data.getQueryParameter("payerIdentification") != null && !data.getQueryParameter("payerIdentification").isEmpty())
+                vtexData.setPayerIdentification(Long.parseLong(data.getQueryParameter("payerIdentification")));
+            if(data.getQueryParameter("payerEmail") != null && !data.getQueryParameter("payerEmail").isEmpty())
+                vtexData.setPayerEmail(data.getQueryParameter("payerEmail"));
+
+            if(data.getQueryParameter("acquirerId") != null && !data.getQueryParameter("acquirerId").isEmpty()) {
+                vtexData.setAcquirerId(data.getQueryParameter("acquirerId"));
+                vtexData.setTarget(vtexData.getAcquirerId().split("-")[2]);
+            }
+            if(data.getQueryParameter("acquirerSecret") != null && !data.getQueryParameter("acquirerSecret").isEmpty())
+                vtexData.setAcquirerSecret(data.getQueryParameter("acquirerSecret"));
+            if(data.getQueryParameter("acquirerFee") != null && !data.getQueryParameter("acquirerFee").isEmpty())
+                vtexData.setAcquirerFee(Double.parseDouble(data.getQueryParameter("acquirerFee")));
+            if(data.getQueryParameter("accessToken") != null && !data.getQueryParameter("accessToken").isEmpty())
+                vtexData.setAquirerAccessToken(data.getQueryParameter("accessToken"));
+            if(data.getQueryParameter("sellerName") != null && !data.getQueryParameter("sellerName").isEmpty())
+                vtexData.setAccountName(data.getQueryParameter("sellerName"));
+            if(data.getQueryParameter("storeCurrency") != null && !data.getQueryParameter("storeCurrency").isEmpty())
+                vtexData.setStoreCurrency(data.getQueryParameter("storeCurrency"));
+
+            if(data.getQueryParameter("urlCallback") != null && !data.getQueryParameter("urlCallback").isEmpty())
+                vtexData.setUrlCallBack(data.getQueryParameter("urlCallback"));
+            if(data.getQueryParameter("transactionId") != null && !data.getQueryParameter("transactionId").isEmpty())
+                vtexData.setTransactionId(data.getQueryParameter("transactionId"));
+        } catch (NullPointerException e) {
+            Log.i("MAS","query nullpointer || "+e.getMessage());
+            e.printStackTrace();
+            action = "";
+            queryString = "";
+
+            showErrorMessage(e.getMessage());
+        } catch (JSONException e) {
+            e.printStackTrace();
+
+            showErrorMessage(e.getMessage());
+        }
+
+        appendLog("Payment", "DATA: "+vtexData.toString());
+
+        if (action != null && (action.equals("payment") || action.equals("payment-reversal"))) {
+            Log.i("MAS","query: "+queryString);
+            Log.i("MAS","vtexData: "+vtexData.toString());
+
+            sendSale();
+        } else {
+            showProgress(false);
+
+            Log.i("MAS", "getParamsFromIntent no action");
+            String msg = "Action not recognized -/ " +action;
+            showErrorMessage(msg);
+
+            Log.i("MAS","ERROR - "+msg);
+        }
+    }
+
+    private void sendSale() {
+        appendLog("Sale", "Send sale");
+        if (vtexData == null || vtexData.getAmount() <= 0) {
+            Log.i("MAS", "sendSale");
+            showProgress(false);
+
+            showErrorMessage("No sale data found");
+            toogleRetry(true);
+
+            return;
+        }
+
+        int amount = (int) vtexData.getAmount();
+        String tkt = vtexData.getPaymentId();
+
+        mposLibobj = new mposLib(mPclService);
+        String stx = "02";
+        String ext = "03";
+
+        String mensajeriaTrx = "0200|"+amount+"|"+tkt+"|||0";
+        /*Convierto mi string de trx a hex*/
+        String trxToHex = mposLibobj.convertStringToHex(mensajeriaTrx);
+        /*Luego calculo el largo de mi trama en hex (LRC)*/
+        String obtenerLrc = calcularLRC(trxToHex);
+        /*Ahora armo el comando completo de trx*/
+        String trxCompleta = stx+trxToHex+ext+ obtenerLrc;
+        /*Envio el comando completo para que el POS integrado bluetooth lo procese*/
+        appendLog("Sale", "Start transaction");
+        mposLibobj.startTransaction(trxCompleta);
+
+        mposLibobj.setOnTransactionFinishedListener(response -> {
+            showProgress(false);
+
+            /*EJEMPLO DE RESPONSE*/
+            Log.i("MAS", "Respuesta hexResponse: "+ response);
+            String respToString = mposLibobj.convertHexToString(response);
+            Log.i("MAS", "Respuesta stringResponse: "+ respToString);
+            appendLog("Sale", "Transaction finished with response '"+response+"'");
+
+            if (response.equals("Aprobado")) {
+                respondWithSuccess(vtexData.getTransactionId());
+            } else
+                respondWithFail(response);
+        });
+    }
+
+    protected void respondWithSuccess(String tid) {
+        Uri.Builder builder = new Uri.Builder();
+        builder.scheme(vtexData.getScheme())
+                .authority(vtexData.getAction())
+                .appendQueryParameter("responsecode", "0")
+                .appendQueryParameter("acquirerName", "mercadopagopoint")
+                .appendQueryParameter("paymentId", vtexData.getPaymentId())
+                .appendQueryParameter("tid", tid);
+        String responseUrl = builder.build().toString();
+
+        Log.i("SendVTEX", responseUrl);
+
+        openURL(responseUrl);
+
+        finish();
+    }
+
+    protected void respondWithFail(String status) {
+        Uri.Builder builder = new Uri.Builder();
+        builder.scheme(vtexData.getScheme())
+                .authority(vtexData.getAction())
+                .appendQueryParameter("responsecode", "110")
+                .appendQueryParameter("reason", status)
+                .appendQueryParameter("acquirerName", "mercadopagopoint")
+                .appendQueryParameter("paymentId", vtexData.getPaymentId());
+        String responseUrl = builder.build().toString();
+
+        Log.i("SendVTEX", responseUrl);
+
+        openURL(responseUrl);
+
+        finish();
+    }
+
+    protected void openURL(String url) {
+        if (url == null || url.isEmpty())
+            return;
+
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            CharSequence error = "Could not open URL '" + url + "': " + e.getMessage();
+            Toast toast = Toast.makeText(getApplicationContext(), error, Toast.LENGTH_LONG);
+            toast.show();
+        }
+    }
+
+    private String calcularLRC(String input){
+        String LRC = "";
+        int uintVal = 0;
+        if(!input.equals("")){
+            byte[] arrayofhex = hexStringToByteArray(input);
+            for(int count = 1; count < arrayofhex.length; ++count){
+                if(count == 1){
+                    uintVal = arrayofhex[count - 1] ^ arrayofhex[count];
+                }else{
+                    uintVal ^= arrayofhex[count];
+                }
+            }
+        }
+        LRC = Integer.toHexString(uintVal).toUpperCase();
+        int f = LRC.length();
+        if(f == 2){
+            return LRC;
+        }else {
+            char[] chars = LRC.toCharArray();
+            StringBuilder hex = new StringBuilder();
+            for (char aChar : chars) {
+                hex.append(Integer.toHexString(aChar));
+            }
+            return hex.toString();
+        }
+    }
+
+    private void toogleRetry(boolean value) {
+        retryButton.setVisibility(value ? View.VISIBLE : View.GONE);
+    }
+
+    private void showProgress(boolean value) {
+        progressBar.setVisibility(value ? View.VISIBLE : View.GONE);
+    }
+
+    private void showErrorMessage(String mError) {
+        appendLog("ERROR", mError);
+
+        AlertDialog alertDialog = new AlertDialog.Builder(this).create();
+        alertDialog.setTitle("ERROR");
+        alertDialog.setMessage(mError);
+        alertDialog.setButton(AlertDialog.BUTTON_NEUTRAL, "OK",
+                (dialog, which) -> dialog.dismiss());
+        alertDialog.show();
+    }
+
+    public void appendLog(String tag, String text) {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss-SSS", Locale.ENGLISH);
+        Log.i("MAS", "tag: "+tag+" // text: "+text);
+        String filesDirs = ContextCompat.getExternalFilesDirs(this, null)[0].toString();
+
+        File logFile = new File(filesDirs, "/log-file.txt");
+        if (!logFile.exists()) {
+            try {
+                logFile.createNewFile();
+            } catch (IOException e) {
+                Log.i("MAS-", "file exists - catch \n"+e.getMessage());
+                e.printStackTrace();
+            }
+        }
+        try {
+            //BufferedWriter for performance, true to set append to file flag
+            BufferedWriter buf = new BufferedWriter(new FileWriter(logFile, true));
+            buf.append(sdf.format(new Date())).append(": ").append(tag).append(" -> ").append(text);
+            buf.newLine();
+            buf.close();
+        } catch (IOException e) {
+            Log.i("MAS-", "write file - catch \n"+e.getMessage());
+            e.printStackTrace();
+        }
+    }
+}
