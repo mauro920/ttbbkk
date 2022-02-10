@@ -39,8 +39,7 @@ abstract class CommonActivity extends Activity {
         {
             /*We've bound to LocalService, cast the IBinder and get
             LocalService instance*/
-            PclService.LocalBinder binder = (PclService.LocalBinder)
-                    boundService;
+            PclService.LocalBinder binder = (PclService.LocalBinder) boundService;
             mPclService = binder.getService();
             onPclServiceConnected();
         }

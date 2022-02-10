@@ -12,6 +12,7 @@ import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.core.content.ContextCompat;
@@ -45,6 +46,7 @@ public class MainActivity extends CommonActivity {
 
     private ProgressBar progressBar;
     private Button retryButton;
+    private TextView infoText;
 
     private VtexData vtexData;
 
@@ -57,6 +59,7 @@ public class MainActivity extends CommonActivity {
 
         progressBar = findViewById(R.id.progressBar);
         retryButton = findViewById(R.id.button_retry);
+        infoText = findViewById(R.id.infoText);
 
         retryButton.setOnClickListener(view -> {
             appendLog("Payment", "Retry");
@@ -112,14 +115,9 @@ public class MainActivity extends CommonActivity {
     }
 
     @Override
-    protected void onStop() {
-        stopPclService();
-        super.onStop();
-    }
-
-    @Override
     protected void onDestroy() {
         appendLog("Service", "releaseService");
+        stopPclService();
         releaseService();
         super.onDestroy();
     }
@@ -129,7 +127,6 @@ public class MainActivity extends CommonActivity {
         appendLog("Service", "startPclService");
         if (!mServiceStarted)
         {
-            appendLog("Service", "Start startPclService");
             SharedPreferences settings = getSharedPreferences("PCLSERVICE", MODE_PRIVATE);
             boolean enableLog = settings.getBoolean("ENABLE_LOG", true);
             Intent i = new Intent(this, PclService.class);
@@ -161,6 +158,11 @@ public class MainActivity extends CommonActivity {
     @Override
     void onPclServiceConnected() {
         //
+        Log.i("MAS", "PclServiceConnected");
+
+        infoText.append("Pcl Service connected\n");
+
+        toogleRetry(true);
     }
 
     protected void getParamsFromIntent(Uri data) {
@@ -243,8 +245,7 @@ public class MainActivity extends CommonActivity {
         if (action != null && (action.equals("payment") || action.equals("payment-reversal"))) {
             Log.i("MAS","query: "+queryString);
             Log.i("MAS","vtexData: "+vtexData.toString());
-
-            sendSale();
+            infoText.append("Payment\n"+vtexData.getPaymentId()+"\nrecieved\n\n");
         } else {
             showProgress(false);
 
@@ -271,20 +272,10 @@ public class MainActivity extends CommonActivity {
         int amount = (int) vtexData.getAmount();
         String tkt = vtexData.getPaymentId();
 
-        mposLibobj = new mposLib(mPclService);
-        String stx = "02";
-        String ext = "03";
+        Log.i("MAS", "mCurrentDevice -> "+mCurrentDevice);
+        Log.i("MAS", "isCompanionConnected? -> "+isCompanionConnected());
 
-        String mensajeriaTrx = "0200|"+amount+"|"+tkt+"|||0";
-        /*Convierto mi string de trx a hex*/
-        String trxToHex = mposLibobj.convertStringToHex(mensajeriaTrx);
-        /*Luego calculo el largo de mi trama en hex (LRC)*/
-        String obtenerLrc = calcularLRC(trxToHex);
-        /*Ahora armo el comando completo de trx*/
-        String trxCompleta = stx+trxToHex+ext+ obtenerLrc;
-        /*Envio el comando completo para que el POS integrado bluetooth lo procese*/
-        appendLog("Sale", "Start transaction");
-        mposLibobj.startTransaction(trxCompleta);
+        mposLibobj = new mposLib(mPclService);
 
         mposLibobj.setOnTransactionFinishedListener(response -> {
             showProgress(false);
@@ -300,6 +291,20 @@ public class MainActivity extends CommonActivity {
             } else
                 respondWithFail(response);
         });
+
+        String stx = "02";
+        String ext = "03";
+
+        String mensajeriaTrx = "0200|"+amount+"|"+tkt+"|||0";
+        /*Convierto mi string de trx a hex*/
+        String trxToHex = mposLibobj.convertStringToHex(mensajeriaTrx);
+        /*Luego calculo el largo de mi trama en hex (LRC)*/
+        String obtenerLrc = calcularLRC(trxToHex);
+        /*Ahora armo el comando completo de trx*/
+        String trxCompleta = stx+trxToHex+ext+ obtenerLrc;
+        /*Envio el comando completo para que el POS integrado bluetooth lo procese*/
+        appendLog("Sale", "Start transaction");
+        mposLibobj.startTransaction(trxCompleta);
     }
 
     protected void respondWithSuccess(String tid) {
@@ -315,8 +320,6 @@ public class MainActivity extends CommonActivity {
         Log.i("SendVTEX", responseUrl);
 
         openURL(responseUrl);
-
-        finish();
     }
 
     protected void respondWithFail(String status) {
@@ -332,8 +335,6 @@ public class MainActivity extends CommonActivity {
         Log.i("SendVTEX", responseUrl);
 
         openURL(responseUrl);
-
-        finish();
     }
 
     protected void openURL(String url) {
