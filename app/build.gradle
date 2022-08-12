@@ -39,6 +39,9 @@ dependencies {
     //Transbank library import
     implementation("com.github.transbankdevelopers:transbank-sdk-pos-java:1.0.2")
     implementation (name:'mposintegrado', ext:'aar')
+
+    compileOnly 'org.projectlombok:lombok:1.18.24'
+    annotationProcessor 'org.projectlombok:lombok:1.18.24'
 }
 
 configurations {

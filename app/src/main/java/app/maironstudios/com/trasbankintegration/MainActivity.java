@@ -1,10 +1,13 @@
 package app.maironstudios.com.trasbankintegration;
 
+import static androidx.constraintlayout.helper.widget.MotionEffect.TAG;
 import static posintegrado.ingenico.com.mposintegrado.mposLib.hexStringToByteArray;
 
+import android.Manifest;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -15,6 +18,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.ingenico.pclservice.PclService;
@@ -29,6 +33,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
@@ -47,10 +52,12 @@ public class MainActivity extends CommonActivity {
     private ProgressBar progressBar;
     private Button retryButton;
     private TextView infoText;
-
     private VtexData vtexData;
-
     private PclUtilities mPclUtil;
+    mposLib posLib;
+    private String selectedDevice;
+    private boolean isConnected = false;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,18 +76,44 @@ public class MainActivity extends CommonActivity {
 
         appendLog("Service", "initService");
         initService();
+        startPclService();
 
-        mPclUtil = new PclUtilities(this, "app.maironstudios.com.trasbankintegration", "pairing_addr.txt");
+        mPclUtil = new PclUtilities(this, getPackageName(), "pairing_addr.txt");
 
         /*Se obtiene con esto la lista de los dipositivos ingenico paired con el
         terminal*/
         Set<PclUtilities.BluetoothCompanion> btComps = mPclUtil.GetPairedCompanions();
+
+        ArrayList<PosBluetooth> btDevices = this.getDevices();
+
+
+        if (!btDevices.isEmpty()) {
+            // Loop through paired devices
+            for (PosBluetooth device : btDevices) {
+                Log.d(TAG, device.getAddress() + " - " + device.getName());
+
+                if (device.isActivated() && isConnected) {
+                    selectedDevice = device.getAddress();
+                    connectDevice(selectedDevice);
+                    return;
+                }
+            }
+
+            selectedDevice = btDevices.get(0).getAddress();
+            return;
+        }
+
+        this.makeToast(R.string.no_paired_device);
+    }
+
+
         if (btComps != null && (btComps.size() > 0)) {
             /* Loop through paired devices*/
             for (PclUtilities.BluetoothCompanion comp : btComps) {
                 /*Aca se revisa si el dipositivo esta activo y lo define como el actual*/
                 if (comp.isActivated()) {
                     bFound = true;
+
                     mCurrentDevice = comp.getBluetoothDevice().getAddress() + " - " +
                             comp.getBluetoothDevice().getName();
                     appendLog("Device", "Found device -> "+mCurrentDevice);
@@ -106,12 +139,12 @@ public class MainActivity extends CommonActivity {
                 Log.e("MAS","recieved callback");
             }
         }
+        sendSale();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        startPclService();
     }
 
     @Override
@@ -130,11 +163,12 @@ public class MainActivity extends CommonActivity {
             SharedPreferences settings = getSharedPreferences("PCLSERVICE", MODE_PRIVATE);
             boolean enableLog = settings.getBoolean("ENABLE_LOG", true);
             Intent i = new Intent(this, PclService.class);
-            i.putExtra("PACKAGE_NAME", "app.maironstudios.com.trasbankintegration");
+            i.putExtra("PACKAGE_NAME", getPackageName());
             i.putExtra("FILE_NAME", "pairing_addr.txt");
             i.putExtra("ENABLE_LOG", enableLog);
             if (getApplicationContext().startService(i) != null) mServiceStarted = true;
 
+            Log.d("Service","startPclService - started: "+mServiceStarted);
             appendLog("Service", "startPclService - started: "+mServiceStarted);
         }
     }
@@ -258,6 +292,7 @@ public class MainActivity extends CommonActivity {
     }
 
     private void sendSale() {
+        posLib = new mposLib(mPclService);
         appendLog("Sale", "Send sale");
         if (vtexData == null || vtexData.getAmount() <= 0) {
             Log.i("MAS", "sendSale");
@@ -275,36 +310,39 @@ public class MainActivity extends CommonActivity {
         Log.i("MAS", "mCurrentDevice -> "+mCurrentDevice);
         Log.i("MAS", "isCompanionConnected? -> "+isCompanionConnected());
 
-        mposLibobj = new mposLib(mPclService);
-
-        mposLibobj.setOnTransactionFinishedListener(response -> {
-            showProgress(false);
-
-            /*EJEMPLO DE RESPONSE*/
-            Log.i("MAS", "Respuesta hexResponse: "+ response);
-            String respToString = mposLibobj.convertHexToString(response);
-            Log.i("MAS", "Respuesta stringResponse: "+ respToString);
-            appendLog("Sale", "Transaction finished with response '"+response+"'");
-
-            if (response.equals("Aprobado")) {
-                respondWithSuccess(vtexData.getTransactionId());
-            } else
-                respondWithFail(response);
-        });
-
         String stx = "02";
         String ext = "03";
 
         String mensajeriaTrx = "0200|"+amount+"|"+tkt+"|||0";
         /*Convierto mi string de trx a hex*/
-        String trxToHex = mposLibobj.convertStringToHex(mensajeriaTrx);
+        String trxToHex = posLib.convertStringToHex(mensajeriaTrx);
         /*Luego calculo el largo de mi trama en hex (LRC)*/
         String obtenerLrc = calcularLRC(trxToHex);
         /*Ahora armo el comando completo de trx*/
         String trxCompleta = stx+trxToHex+ext+ obtenerLrc;
         /*Envio el comando completo para que el POS integrado bluetooth lo procese*/
         appendLog("Sale", "Start transaction");
-        mposLibobj.startTransaction(trxCompleta);
+        posLib.startTransaction(trxCompleta);
+
+        posLib.setOnTransactionFinishedListener(new mposLib.onTransactionFinishedListener() {
+            public void onFinish(String response) {
+                /*EJEMPLO DE RESPONSE*/
+                String respToString = posLib.convertHexToString(response);
+                Log.i("Respuesta response: ", respToString);
+                showProgress(false);
+
+                /*EJEMPLO DE RESPONSE*/
+                Log.i("MAS", "Respuesta hexResponse: "+ response);
+                Log.i("MAS", "Respuesta stringResponse: "+ respToString);
+                appendLog("Sale", "Transaction finished with response '"+response+"'");
+
+                if (response.equals("Aprobado")) {
+                    respondWithSuccess(vtexData.getTransactionId());
+                } else
+                    respondWithFail(response);;
+            }
+        });
+
     }
 
     protected void respondWithSuccess(String tid) {
@@ -312,7 +350,7 @@ public class MainActivity extends CommonActivity {
         builder.scheme(vtexData.getScheme())
                 .authority(vtexData.getAction())
                 .appendQueryParameter("responsecode", "0")
-                .appendQueryParameter("acquirerName", "mercadopagopoint")
+                .appendQueryParameter("acquirerName", "transbankpos")
                 .appendQueryParameter("paymentId", vtexData.getPaymentId())
                 .appendQueryParameter("tid", tid);
         String responseUrl = builder.build().toString();
@@ -328,7 +366,7 @@ public class MainActivity extends CommonActivity {
                 .authority(vtexData.getAction())
                 .appendQueryParameter("responsecode", "110")
                 .appendQueryParameter("reason", status)
-                .appendQueryParameter("acquirerName", "mercadopagopoint")
+                .appendQueryParameter("acquirerName", "transbankpos")
                 .appendQueryParameter("paymentId", vtexData.getPaymentId());
         String responseUrl = builder.build().toString();
 
@@ -423,4 +461,28 @@ public class MainActivity extends CommonActivity {
             e.printStackTrace();
         }
     }
+
+    public void toggleConnection(View view) {
+        if(!isConnected){
+            connectDevice(selectedDevice);
+            return;
+        }
+
+        disconnectDevice();
+    }
+
+    private void connectDevice(String deviceAddress) {
+        textViewStatus.setText(R.string.connecting);
+        textViewStatus.setTextColor(ContextCompat.getColor(this, R.color.connecting));
+        mPclUtil.ActivateCompanion(deviceAddress);
+        startPclService();
+        initService();
+    }
+
+    private void disconnectDevice() {
+        releaseService();
+        stopPclService();
+    }
+
+
 }
