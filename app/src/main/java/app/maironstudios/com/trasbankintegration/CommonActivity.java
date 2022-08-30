@@ -2,10 +2,6 @@ package app.maironstudios.com.trasbankintegration;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-
-import com.ingenico.pclservice.PclService;
-import posintegrado.ingenico.com.mposintegrado.mposLib;
-
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -13,65 +9,68 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.os.IBinder;
-import android.util.Log;
 
-/**
- * Created by MaironApps.
- */
-abstract class CommonActivity extends Activity {
+import com.ingenico.pclservice.PclService;
+import com.ingenico.pclutilities.PclUtilities;
+
+import posintegrado.ingenico.com.mposintegrado.mposLib;
+
+public abstract class CommonActivity extends Activity
+{
+    protected static final String TAG = "POSBT-TEST";
+
     protected PclService mPclService = null;
     protected boolean mBound = false;
+    protected PclUtilities mPclUtil;
     protected mposLib mposLibobj;
     protected boolean mServiceStarted;
     protected CharSequence mCurrentDevice;
-
     private PclServiceConnection mServiceConnection;
-
     private StateReceiver m_StateReceiver = null;
 
-    abstract void onStateChanged(String state);
-    abstract void onPclServiceConnected();
 
+    //BINDING OF PCLSERVICE
     // Implement ServiceConnection
     class PclServiceConnection implements ServiceConnection
     {
         public void onServiceConnected(ComponentName className, IBinder boundService )
         {
-            /*We've bound to LocalService, cast the IBinder and get
-            LocalService instance*/
+            // We've bound to LocalService, cast the IBinder and get LocalService instance
             PclService.LocalBinder binder = (PclService.LocalBinder) boundService;
-            mPclService = binder.getService();
+            mPclService = (PclService) binder.getService();
             onPclServiceConnected();
         }
         public void onServiceDisconnected(ComponentName className)
         {
             mPclService = null;
         }
+
     };
 
     // You can call this method in onCreate for instance
     protected void initService()
     {
-        Log.i("MAS", "initService");
         if (!mBound)
         {
             mServiceConnection = new PclServiceConnection();
             Intent intent = new Intent(this, PclService.class);
-            mBound = bindService(intent, mServiceConnection,
-                    Context.BIND_AUTO_CREATE);
-        }
-    }
-    protected void releaseService()
-    {
-        Log.i("MAS", "releaseService");
-        if (mBound)
-        {
-            unbindService(mServiceConnection);
-            mBound = false;
+            mBound =  bindService(intent, mServiceConnection, Context.BIND_AUTO_CREATE);
         }
     }
 
-    private static class StateReceiver extends BroadcastReceiver
+    protected void releaseService()
+    {
+        if (mBound)
+        {
+            unbindService(mServiceConnection );
+            mBound = false;
+        }
+    }
+    //BINDING OF PCLSERVICE
+
+    //TO CONTROL THE CONNECTION STATE
+
+    private class StateReceiver extends BroadcastReceiver
     {
         private CommonActivity ViewOwner = null;
         @SuppressLint("UseValueOf")
@@ -80,6 +79,7 @@ abstract class CommonActivity extends Activity {
             String state = intent.getStringExtra("state");
             ViewOwner.onStateChanged(state);
         }
+
         StateReceiver(CommonActivity receiver)
         {
             super();
@@ -89,11 +89,10 @@ abstract class CommonActivity extends Activity {
 
     private void initStateReceiver()
     {
-        Log.i("MAS", "initStateReceiver");
         if(m_StateReceiver == null)
         {
             m_StateReceiver = new StateReceiver(this);
-            IntentFilter intentfilter = new IntentFilter("com.ingenico.pclservice.intent.action.STATE_CHANGED" );
+            IntentFilter intentfilter = new IntentFilter("com.ingenico.pclservice.intent.action.STATE_CHANGED");
             registerReceiver(m_StateReceiver, intentfilter);
         }
     }
@@ -105,6 +104,11 @@ abstract class CommonActivity extends Activity {
             m_StateReceiver = null;
         }
     }
+    abstract void onStateChanged(String state);
+    abstract void onPclServiceConnected();
+    //TO CONTROL THE CONNECTION STATE
+
+    //Step 2
 
     @Override
     protected void onResume()
@@ -119,19 +123,18 @@ abstract class CommonActivity extends Activity {
         releaseStateReceiver();
     }
 
+    //Step 3
     public boolean isCompanionConnected()
     {
         boolean bRet = false;
         if (mPclService != null)
         {
-            byte[] result = new byte[1];
+            byte result[] = new byte[1];
             {
-                if (mPclService.serverStatus(result))
+                if (mPclService.serverStatus(result) == true)
                 {
                     if (result[0] == 0x10)
-                    {
                         bRet = true;
-                    }
                 }
             }
         }
